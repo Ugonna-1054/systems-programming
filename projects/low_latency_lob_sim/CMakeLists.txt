@@ -5,11 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(lob_bench
+add_executable(lob_bench.tsk
   src/main.cpp
   src/order_book.cpp
 )
 
-target_include_directories(lob_bench PRIVATE include)
+target_include_directories(lob_bench.tsk PRIVATE include)
 
-target_compile_options(lob_bench PRIVATE -O3 -march=native -Wall -Wextra -Wpedantic)
+target_compile_options(lob_bench.tsk PRIVATE -O3 -march=native -Wall -Wextra -Wpedantic)

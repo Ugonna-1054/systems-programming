@@ -1,2 +1,5 @@
 build
 .env
+core*
+core.*
+*.tsk
