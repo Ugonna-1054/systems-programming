@@ -11,47 +11,59 @@
 ## Build
 If `cmake` is unavailable:
 
-```bash
-clang++ -std=c++20 -O3 -march=native -Wall -Wextra -Wpedantic \
-  -Iinclude src/main.cpp src/order_book.cpp -o lob_bench
-```
+    clang++ -std=c++20 -O3 -march=native -Wall -Wextra -Wpedantic \
+      -Iinclude src/main.cpp src/order_book.cpp -o lob_bench
 
 If `cmake` is available:
 
-```bash
-cmake -S . -B build
-cmake --build build -j
-./build/lob_bench 200000 42
-```
+    cmake -S . -B build
+    cmake --build build -j
+    ./build/lob_bench 200000 42
 
 ## Run
-```bash
-./lob_bench <num_orders> <seed>
-# example
-./lob_bench 200000 42
-```
+    ./lob_bench <num_orders> <seed>
+    # example
+    ./lob_bench 200000 42
+
+Profile mode (disables latency collection/sort noise for cleaner macro profiling):
+
+    ./lob_bench 5000000 42 --profile-mode
 
 Optional CSV append output:
 
-```bash
-./lob_bench 200000 42 --csv benchmark_results.csv
-```
+    ./lob_bench 200000 42 --csv benchmark_results.csv
 
 CSV columns:
-`orders,seed,elapsed_s,throughput_orders_per_s,resting_orders,total_trades,total_filled_qty,latency_ns_min,latency_ns_p50,latency_ns_p95,latency_ns_p99,latency_ns_max`
+orders,seed,elapsed_s,throughput_orders_per_s,resting_orders,total_trades,total_filled_qty,latency_ns_min,latency_ns_p50,latency_ns_p95,latency_ns_p99,latency_ns_max
 
 ## Workload Matrix Runner
 Run warmup + measured workload tiers (small/mid/large/xlarge):
 
-```bash
-chmod +x benchmark.sh
-./benchmark.sh
-```
+    chmod +x benchmark.sh
+    ./benchmark.sh
 
-This writes `benchmark_results.csv` with one row per run and prefixed workload metadata.
+This writes benchmark_results.csv with one row per run and prefixed workload metadata.
+
+## Perf + FlameGraph (V1 Profiling)
+Record profile (user-space cycles + call graph):
+
+    perf record -e cycles:u -F 999 -g -- ./build/lob_bench 5000000 42 --profile-mode
+
+Quick text hotspot report:
+
+    perf report --stdio -n --no-children | head -n 80
+
+Generate FlameGraph:
+
+    perf script > out.perf
+    git clone https://github.com/brendangregg/FlameGraph.git
+    ./FlameGraph/stackcollapse-perf.pl out.perf > out.folded
+    ./FlameGraph/flamegraph.pl out.folded > flame.svg
+
+Open flame.svg in browser/VS Code.
 
 ## Next (V2)
 - Per-stage latency breakdown (ingress, match, egress).
 - Multi-threaded producer/consumer pipeline.
-- Optional lock-free queue between stages.
-- Perf-based hotspot profiling and before/after comparison.
+- Optional lock-free queue.
+- Perf-based hotspot optimization and before/after comparison.

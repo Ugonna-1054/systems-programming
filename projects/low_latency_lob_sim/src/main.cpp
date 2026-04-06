@@ -17,6 +17,7 @@ struct BenchConfig {
   uint64_t orders = 1000000;
   uint32_t seed = 42;
   std::string csv_path;
+  bool profile_mode = false;
 };
 
 struct BenchResult {
@@ -47,6 +48,10 @@ BenchConfig parse_args(int argc, char** argv) {
       cfg.csv_path = argv[++i];
       continue;
     }
+    if (arg == "--profile-mode") {
+      cfg.profile_mode = true;
+      continue;
+    }
 
     if (positional_idx == 0) {
       cfg.orders = static_cast<uint64_t>(std::strtoull(arg.c_str(), nullptr, 10));
@@ -66,7 +71,6 @@ uint64_t percentile_ns(const std::vector<uint64_t>& samples, double pct) {
   if (samples.empty()) {
     return 0;
   }
-
   const double rank = (pct / 100.0) * static_cast<double>(samples.size() - 1);
   const auto idx = static_cast<size_t>(rank);
   return samples[idx];
@@ -83,17 +87,20 @@ void append_csv_row(const BenchConfig& cfg, const BenchResult& result) {
     std::exit(3);
   }
 
-  out << cfg.orders << ',' << cfg.seed << ',' << std::fixed << std::setprecision(6)
-      << result.elapsed_s << ',' << std::setprecision(2) << result.throughput << ','
+  out << cfg.orders << ',' << cfg.seed << ',' << (cfg.profile_mode ? 1 : 0) << ','
+      << std::fixed << std::setprecision(6) << result.elapsed_s << ','
+      << std::setprecision(2) << result.throughput << ','
       << result.resting_orders << ',' << result.total_trades << ',' << result.total_filled_qty
       << ',' << result.latency_min << ',' << result.latency_p50 << ',' << result.latency_p95
-      << ',' << result.latency_p99 << ',' << result.latency_max << '\n';
+      << ',' << result.latency_p99 << ',' << result.latency_p999 << ','
+      << result.latency_max << '\n';
 }
 
 void print_human_output(const BenchConfig& cfg, const BenchResult& result) {
   std::cout << "LOB Benchmark Results\n";
   std::cout << "orders: " << cfg.orders << "\n";
   std::cout << "seed: " << cfg.seed << "\n";
+  std::cout << "profile_mode: " << (cfg.profile_mode ? "on" : "off") << "\n";
   std::cout << "elapsed_s: " << std::fixed << std::setprecision(6) << result.elapsed_s << "\n";
   std::cout << "throughput_orders_per_s: " << std::fixed << std::setprecision(2)
             << result.throughput << "\n";
@@ -115,7 +122,9 @@ int main(int argc, char** argv) {
 
   lob::OrderBook book;
   std::vector<uint64_t> latencies_ns;
-  latencies_ns.reserve(static_cast<size_t>(cfg.orders));
+  if (!cfg.profile_mode) {
+    latencies_ns.reserve(static_cast<size_t>(cfg.orders));
+  }
 
   std::mt19937_64 rng(cfg.seed);
   std::uniform_int_distribution<int> side_dist(0, 1);
@@ -129,8 +138,8 @@ int main(int argc, char** argv) {
 
   const auto bench_start = std::chrono::steady_clock::now();
 
-  std::cout << "sizeof Order: " << sizeof(lob::Order) << std::endl;
-  std::cout << "sizeof LevelQueue: " << sizeof(std::deque<lob::Order>) << std::endl;
+  std::cout << "sizeof Order: " << sizeof(lob::Order) << '\n';
+  std::cout << "sizeof LevelQueue: " << sizeof(std::deque<lob::Order>) << '\n';
 
   for (uint64_t i = 0; i < cfg.orders; ++i) {
     lob::Order order{
@@ -143,13 +152,20 @@ int main(int argc, char** argv) {
         .side = side_dist(rng) == 0 ? lob::Side::Buy : lob::Side::Sell,
     };
 
-    const auto t0 = std::chrono::steady_clock::now();
-    const lob::MatchStats stats = book.add(order);
-    const auto t1 = std::chrono::steady_clock::now();
+    const lob::MatchStats stats = [&] {
+      if (cfg.profile_mode) {
+        return book.add(order);
+      }
 
-    const uint64_t ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
-    latencies_ns.push_back(ns);
+      const auto t0 = std::chrono::steady_clock::now();
+      const lob::MatchStats s = book.add(order);
+      const auto t1 = std::chrono::steady_clock::now();
+
+      const uint64_t ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+      latencies_ns.push_back(ns);
+      return s;
+    }();
 
     total_trades += stats.trades;
     total_filled_qty += stats.filled_qty;
@@ -161,21 +177,29 @@ int main(int argc, char** argv) {
 
   const double throughput = elapsed_s > 0.0 ? static_cast<double>(cfg.orders) / elapsed_s : 0.0;
 
-  std::ranges::sort(latencies_ns);
-
-  const BenchResult result{
+  BenchResult result{
       .elapsed_s = elapsed_s,
       .throughput = throughput,
       .resting_orders = book.total_resting_orders(),
       .total_trades = total_trades,
       .total_filled_qty = total_filled_qty,
-      .latency_min = latencies_ns.front(),
-      .latency_p50 = percentile_ns(latencies_ns, 50.0),
-      .latency_p95 = percentile_ns(latencies_ns, 95.0),
-      .latency_p99 = percentile_ns(latencies_ns, 99.0),
-      .latency_p999 = percentile_ns(latencies_ns, 99.9),
-      .latency_max = latencies_ns.back()
+      .latency_min = 0,
+      .latency_p50 = 0,
+      .latency_p95 = 0,
+      .latency_p99 = 0,
+      .latency_p999 = 0,
+      .latency_max = 0,
   };
+
+  if (!cfg.profile_mode && !latencies_ns.empty()) {
+    std::ranges::sort(latencies_ns);
+    result.latency_min = latencies_ns.front();
+    result.latency_p50 = percentile_ns(latencies_ns, 50.0);
+    result.latency_p95 = percentile_ns(latencies_ns, 95.0);
+    result.latency_p99 = percentile_ns(latencies_ns, 99.0);
+    result.latency_p999 = percentile_ns(latencies_ns, 99.9);
+    result.latency_max = latencies_ns.back();
+  }
 
   print_human_output(cfg, result);
   append_csv_row(cfg, result);

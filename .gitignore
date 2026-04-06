@@ -5,3 +5,10 @@ core.*
 *.tsk
 perf*
 *.csv
+
+FlameGraph/
+perf.data
+perf.data.old
+out.perf
+out.folded
+flame.svg
