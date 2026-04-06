@@ -31,8 +31,27 @@ cmake --build build -j
 ./lob_bench 200000 42
 ```
 
+Optional CSV append output:
+
+```bash
+./lob_bench 200000 42 --csv benchmark_results.csv
+```
+
+CSV columns:
+`orders,seed,elapsed_s,throughput_orders_per_s,resting_orders,total_trades,total_filled_qty,latency_ns_min,latency_ns_p50,latency_ns_p95,latency_ns_p99,latency_ns_max`
+
+## Workload Matrix Runner
+Run warmup + measured workload tiers (small/mid/large/xlarge):
+
+```bash
+chmod +x benchmark.sh
+./benchmark.sh
+```
+
+This writes `benchmark_results.csv` with one row per run and prefixed workload metadata.
+
 ## Next (V2)
 - Per-stage latency breakdown (ingress, match, egress).
 - Multi-threaded producer/consumer pipeline.
 - Optional lock-free queue between stages.
-- CSV/JSON metrics output for plotting.
+- Perf-based hotspot profiling and before/after comparison.

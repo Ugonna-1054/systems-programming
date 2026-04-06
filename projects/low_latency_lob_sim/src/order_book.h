@@ -13,10 +13,10 @@ enum class Side : uint8_t {
 
 struct Order {
   uint64_t id;
-  Side side;
   int64_t price_ticks;
-  uint32_t qty;
   uint64_t ts_ns;
+  uint32_t qty;
+  Side side;
 };
 
 struct MatchStats {

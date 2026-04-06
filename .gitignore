@@ -3,3 +3,5 @@ build
 core*
 core.*
 *.tsk
+perf*
+*.csv

@@ -1,9 +1,10 @@
-#include "orderbook/order_book.h"
+#include <order_book.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -13,32 +14,98 @@
 namespace {
 
 struct BenchConfig {
-  uint64_t orders = 500000;
+  uint64_t orders = 1000000;
   uint32_t seed = 42;
+  std::string csv_path;
+};
+
+struct BenchResult {
+  double elapsed_s;
+  double throughput;
+  uint64_t resting_orders;
+  uint64_t total_trades;
+  uint64_t total_filled_qty;
+  uint64_t latency_min;
+  uint64_t latency_p50;
+  uint64_t latency_p95;
+  uint64_t latency_p99;
+  uint64_t latency_p999;
+  uint64_t latency_max;
 };
 
 BenchConfig parse_args(int argc, char** argv) {
   BenchConfig cfg;
 
-  if (argc >= 2) {
-    cfg.orders = static_cast<uint64_t>(std::strtoull(argv[1], nullptr, 10));
-  }
-  if (argc >= 3) {
-    cfg.seed = static_cast<uint32_t>(std::strtoul(argv[2], nullptr, 10));
+  int positional_idx = 0;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--csv") {
+      if (i + 1 >= argc) {
+        std::cerr << "missing path after --csv\n";
+        std::exit(2);
+      }
+      cfg.csv_path = argv[++i];
+      continue;
+    }
+
+    if (positional_idx == 0) {
+      cfg.orders = static_cast<uint64_t>(std::strtoull(arg.c_str(), nullptr, 10));
+    } else if (positional_idx == 1) {
+      cfg.seed = static_cast<uint32_t>(std::strtoul(arg.c_str(), nullptr, 10));
+    } else {
+      std::cerr << "unexpected argument: " << arg << "\n";
+      std::exit(2);
+    }
+    ++positional_idx;
   }
 
   return cfg;
 }
 
-uint64_t percentile_ns(std::vector<uint64_t>& samples, double pct) {
+uint64_t percentile_ns(const std::vector<uint64_t>& samples, double pct) {
   if (samples.empty()) {
     return 0;
   }
 
   const double rank = (pct / 100.0) * static_cast<double>(samples.size() - 1);
   const auto idx = static_cast<size_t>(rank);
-  std::nth_element(samples.begin(), samples.begin() + idx, samples.end());
   return samples[idx];
+}
+
+void append_csv_row(const BenchConfig& cfg, const BenchResult& result) {
+  if (cfg.csv_path.empty()) {
+    return;
+  }
+
+  std::ofstream out(cfg.csv_path, std::ios::app);
+  if (!out) {
+    std::cerr << "failed to open csv file: " << cfg.csv_path << "\n";
+    std::exit(3);
+  }
+
+  out << cfg.orders << ',' << cfg.seed << ',' << std::fixed << std::setprecision(6)
+      << result.elapsed_s << ',' << std::setprecision(2) << result.throughput << ','
+      << result.resting_orders << ',' << result.total_trades << ',' << result.total_filled_qty
+      << ',' << result.latency_min << ',' << result.latency_p50 << ',' << result.latency_p95
+      << ',' << result.latency_p99 << ',' << result.latency_max << '\n';
+}
+
+void print_human_output(const BenchConfig& cfg, const BenchResult& result) {
+  std::cout << "LOB Benchmark Results\n";
+  std::cout << "orders: " << cfg.orders << "\n";
+  std::cout << "seed: " << cfg.seed << "\n";
+  std::cout << "elapsed_s: " << std::fixed << std::setprecision(6) << result.elapsed_s << "\n";
+  std::cout << "throughput_orders_per_s: " << std::fixed << std::setprecision(2)
+            << result.throughput << "\n";
+  std::cout << "resting_orders: " << result.resting_orders << "\n";
+  std::cout << "total_trades: " << result.total_trades << "\n";
+  std::cout << "total_filled_qty: " << result.total_filled_qty << "\n";
+  std::cout << "latency_ns_min: " << result.latency_min << "\n";
+  std::cout << "latency_ns_p50: " << result.latency_p50 << "\n";
+  std::cout << "latency_ns_p95: " << result.latency_p95 << "\n";
+  std::cout << "latency_ns_p99: " << result.latency_p99 << "\n";
+  std::cout << "latency_ns_p999: " << result.latency_p999 << "\n";
+  std::cout << "latency_ns_max: " << result.latency_max << "\n";
 }
 
 }  // namespace
@@ -62,15 +129,18 @@ int main(int argc, char** argv) {
 
   const auto bench_start = std::chrono::steady_clock::now();
 
+  std::cout << "sizeof Order: " << sizeof(lob::Order) << std::endl;
+  std::cout << "sizeof LevelQueue: " << sizeof(std::deque<lob::Order>) << std::endl;
+
   for (uint64_t i = 0; i < cfg.orders; ++i) {
     lob::Order order{
         .id = next_id++,
-        .side = side_dist(rng) == 0 ? lob::Side::Buy : lob::Side::Sell,
         .price_ticks = base_price + price_offset(rng),
-        .qty = qty_dist(rng),
         .ts_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     std::chrono::steady_clock::now().time_since_epoch())
                                     .count()),
+        .qty = qty_dist(rng),
+        .side = side_dist(rng) == 0 ? lob::Side::Buy : lob::Side::Sell,
     };
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -89,30 +159,26 @@ int main(int argc, char** argv) {
   const double elapsed_s =
       std::chrono::duration_cast<std::chrono::duration<double>>(bench_end - bench_start).count();
 
-  std::vector<uint64_t> p50_buf = latencies_ns;
-  std::vector<uint64_t> p95_buf = latencies_ns;
-  std::vector<uint64_t> p99_buf = latencies_ns;
-  const uint64_t p50 = percentile_ns(p50_buf, 50.0);
-  const uint64_t p95 = percentile_ns(p95_buf, 95.0);
-  const uint64_t p99 = percentile_ns(p99_buf, 99.0);
-
-  const auto minmax = std::minmax_element(latencies_ns.begin(), latencies_ns.end());
   const double throughput = elapsed_s > 0.0 ? static_cast<double>(cfg.orders) / elapsed_s : 0.0;
 
-  std::cout << "LOB Benchmark Results\n";
-  std::cout << "orders: " << cfg.orders << "\n";
-  std::cout << "seed: " << cfg.seed << "\n";
-  std::cout << "elapsed_s: " << std::fixed << std::setprecision(6) << elapsed_s << "\n";
-  std::cout << "throughput_orders_per_s: " << std::fixed << std::setprecision(2) << throughput
-            << "\n";
-  std::cout << "resting_orders: " << book.total_resting_orders() << "\n";
-  std::cout << "total_trades: " << total_trades << "\n";
-  std::cout << "total_filled_qty: " << total_filled_qty << "\n";
-  std::cout << "latency_ns_min: " << *minmax.first << "\n";
-  std::cout << "latency_ns_p50: " << p50 << "\n";
-  std::cout << "latency_ns_p95: " << p95 << "\n";
-  std::cout << "latency_ns_p99: " << p99 << "\n";
-  std::cout << "latency_ns_max: " << *minmax.second << "\n";
+  std::ranges::sort(latencies_ns);
+
+  const BenchResult result{
+      .elapsed_s = elapsed_s,
+      .throughput = throughput,
+      .resting_orders = book.total_resting_orders(),
+      .total_trades = total_trades,
+      .total_filled_qty = total_filled_qty,
+      .latency_min = latencies_ns.front(),
+      .latency_p50 = percentile_ns(latencies_ns, 50.0),
+      .latency_p95 = percentile_ns(latencies_ns, 95.0),
+      .latency_p99 = percentile_ns(latencies_ns, 99.0),
+      .latency_p999 = percentile_ns(latencies_ns, 99.9),
+      .latency_max = latencies_ns.back()
+  };
+
+  print_human_output(cfg, result);
+  append_csv_row(cfg, result);
 
   return 0;
 }
